@@ -15,4 +15,7 @@ opencode.json
 
 # Linting and Type checking caches
 .mypy_cache
-.ruff_cache
+.ruff_cache.env
+
+# Environment variables
+.env

@@ -1,4 +1,5 @@
 import json  # noqa: E402
+import os  # noqa: E402
 import re  # noqa: E402
 from typing import Literal  # noqa: E402
 
@@ -11,6 +12,12 @@ from src.schema import get_schema  # noqa: E402
 from src.validator import validate_sql as validate_sql_func  # noqa: E402
 
 
+def _get_llm() -> ChatOllama:
+    model = "phi4-mini-reasoning:latest"
+    base_url = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    return ChatOllama(model=model, base_url=base_url)
+
+
 def _extract_json(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
@@ -20,7 +27,7 @@ def _extract_json(text: str) -> str:
 
 
 def select_tables(state: AgentState) -> AgentState:
-    llm = ChatOllama(model="phi4-mini-reasoning:latest")
+    llm = _get_llm()
 
     prompt = f"""You are an expert at analyzing database schemas.
 Given a question and full database schema, identify the minimum set of tables needed to answer the question.
@@ -74,7 +81,7 @@ Return ONLY a JSON array of table names, e.g., ["customers", "orders"]"""
 
 
 def generate_sql(state: AgentState) -> AgentState:
-    llm = ChatOllama(model="phi4-mini-reasoning:latest")
+    llm = _get_llm()
 
     system = """You are an expert SQLite SQL generator.
 
