@@ -171,10 +171,17 @@ def validate_sql_node(state: AgentState) -> AgentState:
         state["sql_query"] or "", state["param_values"] or [], state["db_schema"]
     )
     if not valid:
+        new_attempts = state["attempts"] + 1
+        if new_attempts >= 3:
+            return {
+                **state,
+                "error": f"Validation failed after {new_attempts} attempts. Last error: {error}",
+                "attempts": new_attempts,
+            }
         return {
             **state,
             "error": error,
-            "attempts": state["attempts"] + 1,
+            "attempts": new_attempts,
         }
     return {
         **state,
