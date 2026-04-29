@@ -42,7 +42,7 @@ AI agent that converts natural language instructions to SQLite SQL queries. Retu
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | LLM Provider | Local open-source (Ollama) | Zero API cost, 100% data privacy, no external API keys needed |
-| Local Model | `phi4-mini-reasoning:latest` (default) | Microsoft Phi-4 Mini Reasoning (3.8B, 128K context). Supports JSON mode via `format="json"`. Strong reasoning capabilities for SQL generation. |
+| Local Model | `llama3.2:3b` (default) | Meta Llama 3.2 3B (3B parameters, 128K context). Fast inference, good balance of performance and speed for SQL generation. |
 | SQL Dialect | SQLite | Lightweight, serverless, stdlib `sqlite3` support |
 | Agent Scope | Generation-only | MVP returns JSON only; no query execution against DB |
 | Param Style | SQLite `?` placeholders | Matches SQLite dialect; positional param values in `param_values` |
@@ -52,7 +52,7 @@ AI agent that converts natural language instructions to SQLite SQL queries. Retu
 | Orchestration | LangGraph `StateGraph` | Stateful multi-step workflow with conditional retry edges |
 | LLM Integration | `langchain-ollama` | Native Ollama support via LangChain ecosystem, no OpenAI SDK workaround |
 | Observability | LangSmith | Zero-config tracing of all LangGraph nodes, LLM calls, retries |
-| Interface | CLI only (`argparse` + `rich`) | MVP targets shell usage; pipe-friendly JSON output to stdout |
+| Interface | CLI only (`argparse`) | MVP targets shell usage; pipe-friendly JSON output to stdout |
 | Retry Logic | Two retry counters: `select_attempts` (max 2) for table selection, `attempts` (max 3) for SQL generation | **select_tables**: Retries on parse failure with incremented `select_attempts` (max 2). **generate_sql**: Two-branch prompt - first attempt clean; retries include Previous SQL + Validation Error |
 | State Tracking | Two counter fields: `select_attempts` + `attempts` | Separate retry tracking for table selection vs SQL generation with independent max attempts |
 | Configuration | CLI args + env vars + `.env` | `--db` required CLI arg; `OLLAMA_BASE_URL`, `OLLAMA_MODEL` via env/.env |
@@ -75,7 +75,6 @@ sqlglot>=25.0
 
 # Config + CLI
 python-dotenv>=1.0
-rich>=13.0
 ```
 
 ### Tools
@@ -83,7 +82,7 @@ rich>=13.0
 - **`ruff`**: Linting + formatting (≥0.15.12)
 - **`mypy`**: Static type checking (≥1.20.2)
 - **Ollama**: Local LLM runtime (serves API at `http://localhost:11434`)
-- **`phi4-mini-reasoning:latest`**: Microsoft Phi-4 Mini Reasoning (3.8B, 128K context window). Supports JSON mode via `format="json"`
+- **`llama3.2:3b`**: Meta Llama 3.2 3B (3B parameters, 128K context window). Fast inference for local deployment.
 
 ---
 
@@ -95,7 +94,7 @@ rich>=13.0
 flowchart TB
     subgraph CLI["CLI (nl2sql.py)"]
         INPUT["Input: --db path/to.db 'question'"]
-        OUTPUT["Output: JSON to stdout (via rich)"]
+        OUTPUT["Output: JSON to stdout"]
     end
     
     subgraph LangGraph["LangGraph StateGraph"]
@@ -113,9 +112,9 @@ flowchart TB
     end
     
     subgraph Support["Support Modules"]
-        M[models.py<br/>AgentState, SQLQuery]
-        S[schema.py<br/>SQLite introspection]
-        V[validator.py<br/>sqlglot AST validation]
+        M[src/models.py<br/>AgentState, SQLQuery]
+        S[src/schema.py<br/>SQLite introspection]
+        V[src/validator.py<br/>sqlglot AST validation]
     end
     
     INPUT --> A
@@ -139,11 +138,11 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    nl2sql["nl2sql.py"] --> g["graph.py"]
-    nl2sql --> models["models.py"]
+    nl2sql["nl2sql.py"] --> g["src/graph.py"]
+    nl2sql --> models["src/models.py"]
     g --> models
-    g --> schema["schema.py"]
-    g --> validator["validator.py"]
+    g --> schema["src/schema.py"]
+    g --> validator["src/validator.py"]
     g -->|ChatOllama| langchain["langchain-ollama"]
     validator --> sqlglot["sqlglot"]
     schema --> sqlite3["sqlite3"]
@@ -165,6 +164,7 @@ class AgentState(TypedDict):
     # Input fields (set in initial state)
     question: str
     db_schema: str
+    db_path: str  # Path to SQLite .db file, used by select_tables to generate narrowed schema
     # Retry/error tracking for select_tables
     select_attempts: int
     # Retry/error tracking for generate_sql
@@ -178,6 +178,7 @@ class AgentState(TypedDict):
 
 **Initialization Rules:**
 - `question` and `db_schema` are provided in the initial graph state
+- `db_path` is explicitly initialized to the `--db` CLI argument value in the initial state (used by `select_tables` to generate narrowed schema)
 - `select_attempts` is explicitly initialized to `0` in the initial state (tracks `select_tables` retries)
 - `attempts` is explicitly initialized to `0` in the initial state (tracks `generate_sql` retries)
 - `selected_tables`, `sql_query`, `param_values`, and `error` are initialized as `None` in the initial state (populated by nodes during workflow execution)
@@ -217,7 +218,7 @@ order_items (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, product_id INTEG
 This format is LLM-friendly, explicit about types/constraints, and matches SQLite's PRAGMA introspection output when formatted correctly.
 
 ### Output Behavior
-The agent outputs JSON to stdout via `rich`. The output structure depends on success/failure:
+The agent outputs JSON to stdout. The output structure depends on success/failure:
 
 **Success (no error, validation passed):**
 ```json
@@ -245,14 +246,13 @@ The agent outputs JSON to stdout via `rich`. The output structure depends on suc
 - `"attempts"` field is internal only, not exposed in output (3 on generate_sql failure, 2 on select_tables failure)
 
 ### Nodes
-1. **`select_tables`**: LLM (ChatOllama with `phi4-mini-reasoning:latest`) reviews full schema, returns list of relevant tables for the question
-   - Uses `ChatOllama(format="json")` for JSON mode output
-   - **LLM Response Parsing**: Parse response with `json.loads()`, validate:
-     - Must be a list of strings
-     - List must not be empty
-     - All table names must exist in the full schema
-   - **Retry Logic**: Max 2 attempts (`select_attempts`). On failure, increment `select_attempts`, set `error` with details. If `select_attempts >= 2`, route to END with error status.
-   - On success: set `selected_tables` in state, clear `error`
+1. **`select_tables`**: LLM (ChatOllama with `llama3.2:3b`) reviews full schema, returns list of relevant tables for the question
+    - **LLM Response Parsing**: Parse response with `json.loads()`, validate:
+      - Must be a list of strings
+      - List must not be empty
+      - All table names must exist in the full schema
+    - **Retry Logic**: Max 2 attempts (`select_attempts`). On failure, increment `select_attempts`, set `error` with details. If `select_attempts >= 2`, route to END with error status.
+    - On success: set `selected_tables` in state, uses `db_path` from state to generate narrowed schema via `src/schema.py`, clear `error`
 
 2. **`generate_sql`**: LLM generates SQL with `?` placeholders + `param_values` using narrowed schema (only selected tables)
    - **First attempt** (`attempts == 0`): Clean prompt with schema + question + few-shot JSON example
@@ -260,8 +260,7 @@ The agent outputs JSON to stdout via `rich`. The output structure depends on suc
      - `PREVIOUS SQL: {sql_query}`
      - `VALIDATION ERROR: {error}`
      - `INSTRUCTION: Fix the SQL above based on the validation error and regenerate`
-   - Uses `ChatOllama(format="json")` for JSON mode output
-   - **LLM Response Parsing**: Use `SQLQuery.model_validate_json(llm_response.content)` to parse and validate output (checks for `sql` and `param_values` keys, rejects extra keys, ensures `sql` is non-empty)
+    - **LLM Response Parsing**: Use `SQLQuery.model_validate_json(llm_response.content)` to parse and validate output (checks for `sql` and `param_values` keys, rejects extra keys, ensures `sql` is non-empty)
    - On parse failure: increment `attempts`, set `error` to parse error details, loop back if `attempts < 3`
    - On success: set `sql_query`, `param_values` in state, clear `error`
    - Includes few-shot example (Adventure Works example from Section 1):
@@ -348,15 +347,15 @@ When the graph reaches `END`:
 
 ---
 
-## 6. Module Structure (Flat Files)
+## 6. Module Structure (src/ Directory)
 
 | File | Responsibility |
 |------|---------------|
-| `models.py` | `SQLQuery` Pydantic model + `AgentState` TypedDict definition |
-| `schema.py` | SQLite schema introspection via `sqlite3` PRAGMA (tables, columns, types, foreign keys) |
-| `graph.py` | LangGraph `StateGraph` setup: nodes, edges, conditional retry logic |
-| `validator.py` | SQL validation: `sqlglot.parse_one()` for syntax, AST walk for table/column allowlist |
-| `nl2sql.py` | CLI entry point: `argparse` for `--db`/`--verbose`, `rich` for JSON output |
+| `nl2sql.py` | CLI entry point: `argparse` for `--db`/`--verbose`, JSON output to stdout |
+| `src/models.py` | `SQLQuery` Pydantic model + `AgentState` TypedDict definition |
+| `src/schema.py` | SQLite schema introspection via `sqlite3` PRAGMA (tables, columns, types, foreign keys) |
+| `src/graph.py` | LangGraph `StateGraph` setup: nodes, edges, conditional retry logic |
+| `src/validator.py` | SQL validation: `sqlglot.parse_one()` for syntax, AST walk for table/column allowlist |
 
 ---
 
@@ -419,7 +418,7 @@ flowchart TD
 
 **Key:** The retry path (orange) includes error context in the prompt, allowing the LLM to "see what broke and aim its fix" (machinelearningplus, 2026). When max attempts are reached, the output includes `status: "error"` with the `error` field containing validation context.
 
-### sqlglot Usage in `validator.py`
+### sqlglot Usage in `src/validator.py`
 sqlglot is the cornerstone of SQL validation. It parses SQL into an Abstract Syntax Tree (AST) for structural analysis:
 
 1. **Syntax Check**: `ast = sqlglot.parse_one(sql, dialect="sqlite")` — raises `sqlglot.errors.ParseError` if invalid
@@ -453,7 +452,7 @@ columns = {c.name for c in ast.find_all(exp.Column)}  # {'company'}
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `phi4-mini-reasoning:latest` | Ollama model (Microsoft Phi-4 Mini Reasoning, 3.8B) |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model (Meta Llama 3.2 3B) |
 | `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
 | `LANGCHAIN_API_KEY` | (none) | LangSmith API key |
 | `LANGCHAIN_PROJECT` | `nl2sql-dev` | LangSmith project name |

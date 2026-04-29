@@ -72,7 +72,7 @@ nl2sql/
 - **Python** ≥ 3.11
 - **uv** (package manager) — [installation guide](https://docs.astral.sh/uv/getting-started/installation/)
 - **Ollama** — [download](https://ollama.com/download) and install
-- **`phi4-mini-reasoning:latest`** model pulled in Ollama
+- **`llama3.2:3b`** model pulled in Ollama
 
 ### Installation
 
@@ -89,7 +89,7 @@ nl2sql/
 
 3. Pull the required Ollama model:
    ```bash
-   ollama pull phi4-mini-reasoning:latest
+   ollama pull llama3.2:3b
    ```
 
 ### Environment Setup
@@ -103,7 +103,7 @@ LANGCHAIN_PROJECT=nl2sql-dev
 LANGCHAIN_API_KEY=your_langsmith_api_key
 
 # Ollama Configuration
-OLLAMA_HOST=http://localhost:11434
+OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_API_KEY=
 ```
 
@@ -158,12 +158,12 @@ Output:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
 | `LANGCHAIN_API_KEY` | (none) | LangSmith API key |
 | `LANGCHAIN_PROJECT` | `nl2sql-dev` | LangSmith project name |
 
-**Note:** The LLM model (`phi4-mini-reasoning:latest`) is hardcoded in `src/graph.py`.
+**Note:** The LLM model (`llama3.2:3b`) is the default in `src/graph.py` but can be overridden via `OLLAMA_MODEL` env var.
 
 ## Development
 

@@ -13,9 +13,9 @@ from src.validator import validate_sql as validate_sql_func  # noqa: E402
 
 
 def _get_llm() -> ChatOllama:
-    model = "phi4-mini-reasoning:latest"
-    base_url = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    return ChatOllama(model=model, base_url=base_url)
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    return ChatOllama(model=model, base_url=base_url, format="json")
 
 
 def _extract_json(text: str) -> str:
@@ -44,7 +44,25 @@ Return ONLY a JSON array of table names, e.g., ["customers", "orders"]"""
     clean = _extract_json(content)
 
     try:
-        tables = json.loads(clean)
+        parsed = json.loads(clean)
+        # Handle various LLM response formats
+        if isinstance(parsed, dict):
+            # Check for common wrapper keys, or any value that is a list
+            tables = None
+            for key in ["result", "table_names", "tables"]:
+                if key in parsed and isinstance(parsed[key], list):
+                    tables = parsed[key]
+                    break
+            if tables is None:
+                # Look for any list value in the dict
+                for val in parsed.values():
+                    if isinstance(val, list) and val:
+                        tables = val
+                        break
+            if tables is None:
+                raise ValueError(f"Unexpected JSON object format: {parsed}")
+        else:
+            tables = parsed
         if not isinstance(tables, list) or not tables:
             raise ValueError("Must be a non-empty list")
         for t in tables:

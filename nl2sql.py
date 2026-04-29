@@ -46,17 +46,11 @@ def main() -> None:
     result = graph.invoke(initial_state)
 
     if result.get("error"):
-        attempts = result.get("attempts", 0)
-        select_attempts = result.get("select_attempts", 0)
-        if select_attempts >= 2:
-            error_msg = f"Validation failed after {select_attempts} attempts. Last error: {result['error']}"
-        else:
-            error_msg = f"Validation failed after {attempts} attempts. Last error: {result['error']}"
         output = {
             "sql": result.get("sql_query", ""),
             "param_values": result.get("param_values", []),
             "status": "error",
-            "error": error_msg,
+            "error": result["error"],
         }
     else:
         output = {
